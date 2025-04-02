@@ -1,7 +1,6 @@
 const { ethers } = require("ethers");
 require("dotenv").config();
 const fs = require("fs");
-const readline = require("readline");
 
 // Ambil private key dari .env
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
@@ -15,69 +14,97 @@ if (!PRIVATE_KEY) {
 const provider = new ethers.JsonRpcProvider(TEA_RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// Fungsi untuk mengirim TEA ke daftar alamat
-const sendTea = async (addresses) => {
-    const sentAddresses = []; // Array untuk menyimpan alamat yang sudah dikirim
+// Fungsi untuk membaca alamat dari file
+const readAddressesFromFile = (filePath) => {
+    try {
+        const addresses = fs.readFileSync(filePath, "utf8").split("\n").map(line => line.trim()).filter(line => line.length > 0);
+        return addresses;
+    } catch (error) {
+        console.error("Gagal membaca file alamat:", error);
+        process.exit(1);
+    }
+};
 
+// Fungsi untuk menghasilkan jumlah token acak antara 0.05 dan 0.2 TEA
+const getRandomAmount = () => {
+    const min = 0.05; // Minimum 0.05 TEA
+    const max = 0.2;  // Maksimum 0.2 TEA
+    return ethers.parseEther((Math.random() * (max - min) + min).toFixed(5));
+};
+
+// Fungsi untuk menghasilkan jeda acak antara 60 dan 100 detik
+const getRandomDelay = () => {
+    const minDelay = 60 * 1000; // 60 detik dalam milidetik
+    const maxDelay = 100 * 1000; // 100 detik dalam milidetik
+    return Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+};
+
+// Fungsi untuk mengecek dan menunggu jeda 24 jam jika sudah 200 transaksi
+let transactionCount = 0; // Counter global untuk melacak jumlah transaksi
+const checkTransactionLimit = async () => {
+    const MAX_TRANSACTIONS = 200; // Batas 200 transaksi (bisa diubah menjadi 150)
+    const DELAY_24H = 24 * 60 * 60 * 1000; // 24 jam dalam milidetik
+
+    if (transactionCount >= MAX_TRANSACTIONS) {
+        console.log(`Batas ${MAX_TRANSACTIONS} transaksi tercapai. Menunggu 24 jam sebelum melanjutkan...`);
+        await new Promise(resolve => setTimeout(resolve, DELAY_24H));
+        transactionCount = 0; // Reset counter setelah 24 jam
+    }
+};
+
+// Fungsi untuk mengirim TEA ke daftar alamat dari file dengan jeda
+const sendTeaFromFile = async (addresses) => {
     for (let address of addresses) {
-        try {
-            // Validasi alamat Ethereum
-            if (!ethers.isAddress(address)) {
-                console.error(`Alamat ${address} tidak valid. Melewati...`);
-                continue;
-            }
+        await checkTransactionLimit(); // Cek batas transaksi sebelum setiap transaksi
 
+        if (!ethers.isAddress(address)) {
+            console.error(`Alamat ${address} tidak valid. Melewati...`);
+            continue;
+        }
+
+        const amount = getRandomAmount();
+        const delay = getRandomDelay();
+
+        try {
             const tx = await wallet.sendTransaction({
                 to: address,
-                value: ethers.parseEther("0.01"), // Kirim 0.01 TEA ke setiap alamat
+                value: amount,
             });
-            console.log(`Mengirim 0.01 TEA ke ${address}. Tx Hash: ${tx.hash}`);
+
+            const amountInEther = ethers.formatEther(amount);
+            console.log(`Mengirim ${amountInEther} TEA ke ${address}. Tx Hash: ${tx.hash}`);
             await tx.wait();
 
-            // Simpan alamat yang berhasil dikirim ke array
-            sentAddresses.push(address);
+            transactionCount++; // Tambah counter transaksi
+            console.log(`Transaksi ke-${transactionCount} selesai. Menunggu ${delay/1000} detik untuk transaksi berikutnya...`);
+
+            // Tunggu jeda acak sebelum transaksi berikutnya
+            await new Promise(resolve => setTimeout(resolve, delay));
         } catch (error) {
-            console.error(`Gagal mengirim ke ${address}:`, error);
+            console.error(`Error saat mengirim ke ${address}:`, error);
+            // Tunggu jeda sebelum mencoba lagi
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue; // Lanjut ke alamat berikutnya
         }
     }
 
-    // Simpan alamat yang sudah dikirim ke file
-    fs.writeFileSync("sent_addresses.txt", sentAddresses.join("\n"), "utf8");
-    console.log("Daftar alamat yang sudah dikirim token disimpan di 'sent_addresses.txt'");
-};
-
-// Fungsi untuk meminta input daftar alamat secara manual
-const askForCustomAddresses = () => {
-    return new Promise((resolve) => {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-        });
-
-        console.log("Masukkan daftar alamat Ethereum satu per baris. Ketik 'done' jika sudah selesai:");
-        let addresses = [];
-
-        rl.on("line", (line) => {
-            if (line.trim().toLowerCase() === "done") {
-                rl.close();
-                resolve(addresses);
-            } else {
-                addresses.push(line.trim());
-            }
-        });
-    });
+    // Setelah semua alamat diproses, simpan log
+    if (transactionCount > 0) {
+        fs.writeFileSync("sent_addresses.txt", addresses.filter(addr => ethers.isAddress(addr)).join("\n"), "utf8");
+        console.log("Daftar alamat yang sudah dikirim token disimpan di 'sent_addresses.txt'");
+    }
 };
 
 (async () => {
-    // Langsung minta daftar alamat kustom (tanpa opsi untuk menghasilkan alamat acak)
-    const addresses = await askForCustomAddresses();
-    
+    const addressesFile = "addresses.txt"; // Nama file yang berisi daftar alamat
+    const addresses = readAddressesFromFile(addressesFile);
+
     if (addresses.length === 0) {
-        console.error("Tidak ada alamat yang dimasukkan.");
+        console.error("Tidak ada alamat yang ditemukan di file.");
         process.exit(1);
     }
 
     console.log("Daftar alamat yang akan dikirim token:", addresses);
 
-    await sendTea(addresses);
+    await sendTeaFromFile(addresses);
 })();
